@@ -1,0 +1,7 @@
+#+TITLE: Simple Sega Saturn's Initial Program extractor
+
+* Build
+#+begin_src shell
+  $ cmake -S . -B build
+  $ cmake --build build
+#+end_src

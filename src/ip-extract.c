@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <endian.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +8,10 @@
 #define STR(A) #A
 
 #define HEADER_SIZE 0x100
+
+#ifndef IS_BIG_ENDIAN
+#error "No definitions to check if system is Big Endian"
+#endif
 
 #define DEFER(code, ...)                                                      \
   do                                                                          \
@@ -36,11 +41,21 @@ typedef struct SystemID
   char product_number[10];
   char product_version[6];
 
-  char release_date[8];
+  union
+  {
+    char raw[8];
+    struct
+    {
+      char year[4];
+      char month[2];
+      char day[2];
+    };
+  } release_date;
+
   char device_information[8];
 
   char area_symbols[10];
-  char spaces[6];
+  char _spaces[6];
 
   char compatible_peripherals[16];
 
@@ -79,6 +94,18 @@ usage ()
   exit (EXIT_FAILURE);
 }
 
+void
+reverse_bytes (void *data, size_t size)
+{
+  char *bytes = (char *)data;
+  for (size_t i = 0; i < size / 2; ++i)
+    {
+      char temp = bytes[i];
+      bytes[i] = bytes[size - i - 1];
+      bytes[size - i - 1] = temp;
+    }
+}
+
 int
 check_version_format (const char version[6])
 {
@@ -99,9 +126,135 @@ check_date_format (const char date[8])
 }
 
 int
-check_sytem_id (const SystemID *system_id)
+print_regions (const char device_infos[8])
 {
+  static const char JP[] = "Japan";
+  static const char ASIA[] = "Asia";
+  static const char AMERICA[] = "America";
+  static const char PAL[] = "PAL";
+
+  int ret = 1;
+  int pos = 0;
+  char buffer[128] = { 0 };
+
+  for (int i = 0; i < 8; ++i)
+    {
+      if (device_infos[i] == ' ')
+        continue;
+
+      if (pos != 0)
+        {
+          sprintf (buffer + pos, ", ");
+          pos += 2;
+        }
+
+      switch (device_infos[i])
+        {
+        case 'J':
+          sprintf (buffer + pos, JP);
+          pos += sizeof (JP) - 1;
+          break;
+
+        case 'T':
+          sprintf (buffer + pos, ASIA);
+          pos += sizeof (ASIA) - 1;
+          break;
+
+        case 'U':
+          sprintf (buffer + pos, AMERICA);
+          pos += sizeof (AMERICA) - 1;
+          break;
+
+        case 'E':
+          sprintf (buffer + pos, PAL);
+          pos += sizeof (PAL) - 1;
+          break;
+
+        default:
+          DEFER (0, "");
+        }
+    }
+  printf ("Regions: %s\n", buffer);
+
+defer:
+  return ret;
+}
+
+int
+print_compatible_peripheral (const char peripherals[16])
+{
+  static const char CONTROL_PAD[] = "Control Pad";
+  static const char ANALOG_PAD[] = "Analog Controller";
+  static const char MOUSE[] = "Mouse";
+  static const char KBD[] = "Keyboard";
+  static const char STEERING_PAD[] = "Steering Controller";
+  static const char MULTITAP[] = "Multitap";
+
+  int ret = 1;
+  int pos = 0;
+  char buffer[512] = { 0 };
+
+  for (int i = 0; i < 16; ++i)
+    {
+      if (peripherals[i] == ' ')
+        continue;
+
+      if (pos != 0)
+        {
+          sprintf (buffer + pos, ", ");
+          pos += 2;
+        }
+
+      switch (peripherals[i])
+        {
+        case 'J':
+          sprintf (buffer + pos, CONTROL_PAD);
+          pos += sizeof (CONTROL_PAD) - 1;
+          break;
+
+        case 'A':
+        case 'E':
+          sprintf (buffer + pos, ANALOG_PAD);
+          pos += sizeof (ANALOG_PAD) - 1;
+          break;
+
+        case 'M':
+          sprintf (buffer + pos, MOUSE);
+          pos += sizeof (MOUSE) - 1;
+          break;
+
+        case 'K':
+          sprintf (buffer + pos, KBD);
+          pos += sizeof (KBD) - 1;
+          break;
+
+        case 'S':
+          sprintf (buffer + pos, STEERING_PAD);
+          pos += sizeof (STEERING_PAD) - 1;
+          break;
+
+        case 'T':
+          sprintf (buffer + pos, MULTITAP);
+          pos += sizeof (MULTITAP) - 1;
+          break;
+
+        default:
+          DEFER (0, "");
+        }
+    }
+  printf ("Compatible peripherals: %s\n", buffer);
+
+defer:
+  return ret;
+}
+
+int
+check_system_id (const SystemID *system_id)
+{
+  static const char THIRD_PARTY[] = "SEGA TP ";
+
   int ret = 0;
+  int cd_number, total_cds;
 
   if (strncmp (system_id->hardware_identifier, "SEGA SEGASATURN ",
                sizeof (system_id->hardware_identifier))
@@ -109,28 +262,55 @@ check_sytem_id (const SystemID *system_id)
     {
       DEFER (EXIT_FAILURE, "Invalid hardware identifier");
     }
+  printf ("Hardware identifier: %.16s\n", system_id->hardware_identifier);
 
   if (strncmp (system_id->maker_id, "SEGA ENTERPRISES",
                sizeof (system_id->maker_id))
       != 0)
     {
-      if (strncmp (system_id->maker_id, "SEGA TP ",
-                   sizeof (system_id->maker_id))
+      if (strncmp (system_id->maker_id, THIRD_PARTY, sizeof (THIRD_PARTY) - 1)
           != 0)
         {
           DEFER (EXIT_FAILURE, "Invalid maker ID");
         }
     }
+  printf ("Maker ID: %.16s\n", system_id->maker_id);
 
   if (check_version_format (system_id->product_version) == 0)
     {
       DEFER (EXIT_FAILURE, "Invalid product version");
     }
+  printf ("Version: %.6s\n", system_id->product_version);
 
-  if (check_date_format (system_id->release_date) == 0)
+  if (check_date_format (system_id->release_date.raw) == 0)
     {
       DEFER (EXIT_FAILURE, "Invalid release date format");
     }
+  printf ("Release date: %.4s/%.2s/%.2s\n", system_id->release_date.year,
+          system_id->release_date.month, system_id->release_date.day);
+
+  if (sscanf (system_id->device_information, "CD-%d/%d", &cd_number,
+              &total_cds)
+          != 2
+      || total_cds < cd_number)
+    {
+      DEFER (EXIT_FAILURE, "Invalid device information format");
+    }
+  printf ("CD: %d/%d\n", cd_number, total_cds);
+
+  if (print_regions (system_id->area_symbols) == 0)
+    {
+      DEFER (EXIT_FAILURE, "Invalid area symbols");
+    }
+
+  if (print_compatible_peripheral (system_id->compatible_peripherals) == 0)
+    {
+      DEFER (EXIT_FAILURE, "Invalid compatible peripherals");
+    }
+
+  if (IS_BIG_ENDIAN == 0)
+    reverse_bytes ((void *)&(system_id->ip_size), sizeof (system_id->ip_size));
+  printf ("IP Size %d (%x)\n", system_id->ip_size, system_id->ip_size);
 
 defer:
   return ret;
@@ -173,7 +353,7 @@ parse_file (const char *filename)
       DEFER (EXIT_FAILURE, "Failed to read System ID");
     }
 
-  DEFER (check_sytem_id (&system_id), "");
+  DEFER (check_system_id (&system_id), "");
 
 defer:
   if (file != NULL)
